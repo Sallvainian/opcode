@@ -1,0 +1,272 @@
+name: Build Windows
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: 'Build target'
+        required: false
+        default: 'x86_64-pc-windows-msvc'
+        type: string
+      sign-artifacts:
+        description: 'Sign build artifacts'
+        required: false
+        default: false
+        type: boolean
+      upload-artifacts:
+        description: 'Upload build artifacts'
+        required: false
+        default: true
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Build target'
+        required: false
+        default: 'x86_64-pc-windows-msvc'
+        type: choice
+        options:
+          - x86_64-pc-windows-msvc
+          - i686-pc-windows-msvc
+      sign-artifacts:
+        description: 'Sign build artifacts'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    outputs:
+      msi-name: ${{ steps.artifact-names.outputs.msi-name }}
+      nsis-name: ${{ steps.artifact-names.outputs.nsis-name }}
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Get version from package.json
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "Version: $version"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.target }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          prefix-key: 'rust-${{ inputs.target }}'
+          key: ${{ hashFiles('**/Cargo.lock') }}
+          cache-all-crates: true
+
+      - name: Install Windows dependencies
+        shell: pwsh
+        run: |
+          Write-Host "Installing Windows-specific tools..." -ForegroundColor Cyan
+          # Ensure Windows SDK is available
+          $sdkPath = "${env:ProgramFiles(x86)}\Windows Kits\10"
+          if (Test-Path $sdkPath) {
+            Write-Host "Windows SDK found at: $sdkPath" -ForegroundColor Green
+          } else {
+            Write-Host "Warning: Windows SDK not found" -ForegroundColor Yellow
+          }
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint and format check
+        run: |
+          bun run lint
+          cd src-tauri
+          cargo fmt -- --check
+          cargo clippy --target ${{ inputs.target }} -- -D warnings
+
+      - name: Run frontend tests
+        run: bun test
+
+      - name: Run Rust tests
+        run: |
+          cd src-tauri
+          cargo test --target ${{ inputs.target }}
+          cargo test --test windows_integration --target ${{ inputs.target }}
+
+      - name: Build frontend
+        run: bun run build
+
+      - name: Build Tauri application
+        run: bun run tauri build --target ${{ inputs.target }} --verbose
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Code sign artifacts (if enabled)
+        if: ${{ inputs.sign-artifacts && secrets.WINDOWS_CERT_PASSWORD }}
+        shell: pwsh
+        run: |
+          Write-Host "Code signing Windows artifacts..." -ForegroundColor Cyan
+
+          # Import certificate
+          $certPath = "$env:TEMP\certificate.pfx"
+          [System.IO.File]::WriteAllBytes($certPath, [System.Convert]::FromBase64String("${{ secrets.WINDOWS_CERT_BASE64 }}"))
+
+          # Find signtool
+          $signtool = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits" -Recurse -Name "signtool.exe" | Select-Object -First 1 -ExpandProperty FullName
+
+          if (-not $signtool) {
+            Write-Error "signtool.exe not found"
+            exit 1
+          }
+
+          # Sign MSI files
+          $msiFiles = Get-ChildItem -Path "src-tauri/target/${{ inputs.target }}/release/bundle/msi" -Filter "*.msi"
+          foreach ($file in $msiFiles) {
+            Write-Host "Signing: $($file.Name)"
+            & $signtool sign /f $certPath /p "${{ secrets.WINDOWS_CERT_PASSWORD }}" /t "http://timestamp.digicert.com" /fd sha256 $file.FullName
+          }
+
+          # Sign NSIS files
+          $nsisFiles = Get-ChildItem -Path "src-tauri/target/${{ inputs.target }}/release/bundle/nsis" -Filter "*.exe"
+          foreach ($file in $nsisFiles) {
+            Write-Host "Signing: $($file.Name)"
+            & $signtool sign /f $certPath /p "${{ secrets.WINDOWS_CERT_PASSWORD }}" /t "http://timestamp.digicert.com" /fd sha256 $file.FullName
+          }
+
+          # Clean up certificate
+          Remove-Item $certPath -Force
+
+      - name: Generate artifact names
+        id: artifact-names
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $target = "${{ inputs.target }}"
+
+          $msiFiles = Get-ChildItem -Path "src-tauri/target/$target/release/bundle/msi" -Filter "*.msi"
+          $nsisFiles = Get-ChildItem -Path "src-tauri/target/$target/release/bundle/nsis" -Filter "*.exe"
+
+          if ($msiFiles) {
+            $msiName = $msiFiles[0].Name
+            echo "msi-name=$msiName" >> $env:GITHUB_OUTPUT
+            Write-Host "MSI: $msiName"
+          }
+
+          if ($nsisFiles) {
+            $nsisName = $nsisFiles[0].Name
+            echo "nsis-name=$nsisName" >> $env:GITHUB_OUTPUT
+            Write-Host "NSIS: $nsisName"
+          }
+
+      - name: Verify build artifacts
+        shell: pwsh
+        run: |
+          Write-Host "Verifying build artifacts..." -ForegroundColor Cyan
+
+          $targetPath = "src-tauri/target/${{ inputs.target }}/release/bundle"
+
+          $msiPath = "$targetPath/msi"
+          $nsisPath = "$targetPath/nsis"
+
+          if (Test-Path $msiPath) {
+            $msiFiles = Get-ChildItem -Path $msiPath -Filter "*.msi"
+            Write-Host "Found $($msiFiles.Count) MSI file(s):"
+            $msiFiles | ForEach-Object { Write-Host "  - $($_.Name) ($([math]::Round($_.Length/1MB,2)) MB)" }
+          } else {
+            Write-Warning "No MSI files found"
+          }
+
+          if (Test-Path $nsisPath) {
+            $nsisFiles = Get-ChildItem -Path $nsisPath -Filter "*.exe"
+            Write-Host "Found $($nsisFiles.Count) NSIS file(s):"
+            $nsisFiles | ForEach-Object { Write-Host "  - $($_.Name) ($([math]::Round($_.Length/1MB,2)) MB)" }
+          } else {
+            Write-Warning "No NSIS files found"
+          }
+
+      - name: Upload MSI artifacts
+        if: ${{ inputs.upload-artifacts }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi-${{ inputs.target }}
+          path: src-tauri/target/${{ inputs.target }}/release/bundle/msi/*
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload NSIS artifacts
+        if: ${{ inputs.upload-artifacts }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-nsis-${{ inputs.target }}
+          path: src-tauri/target/${{ inputs.target }}/release/bundle/nsis/*
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload updater artifacts
+        if: ${{ inputs.upload-artifacts }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-updater-${{ inputs.target }}
+          path: |
+            src-tauri/target/${{ inputs.target }}/release/bundle/msi/*.msi.zip
+            src-tauri/target/${{ inputs.target }}/release/bundle/msi/*.msi.zip.sig
+            src-tauri/target/${{ inputs.target }}/release/bundle/nsis/*.nsis.zip
+            src-tauri/target/${{ inputs.target }}/release/bundle/nsis/*.nsis.zip.sig
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Create build summary
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "# Windows Build Summary" >> $env:GITHUB_STEP_SUMMARY
+          Write-Host "## Build Information" >> $env:GITHUB_STEP_SUMMARY
+          Write-Host "- **Target**: ${{ inputs.target }}" >> $env:GITHUB_STEP_SUMMARY
+          Write-Host "- **Version**: ${{ steps.version.outputs.version }}" >> $env:GITHUB_STEP_SUMMARY
+          Write-Host "- **Signed**: ${{ inputs.sign-artifacts }}" >> $env:GITHUB_STEP_SUMMARY
+          Write-Host "- **Commit**: ${{ github.sha }}" >> $env:GITHUB_STEP_SUMMARY
+
+          if ("${{ steps.artifact-names.outputs.msi-name }}" -ne "") {
+            Write-Host "- **MSI**: ${{ steps.artifact-names.outputs.msi-name }}" >> $env:GITHUB_STEP_SUMMARY
+          }
+
+          if ("${{ steps.artifact-names.outputs.nsis-name }}" -ne "") {
+            Write-Host "- **NSIS**: ${{ steps.artifact-names.outputs.nsis-name }}" >> $env:GITHUB_STEP_SUMMARY
+          }
+
+          Write-Host "## Artifacts" >> $env:GITHUB_STEP_SUMMARY
+          Write-Host "Build artifacts are available in the workflow artifacts section above." >> $env:GITHUB_STEP_SUMMARY

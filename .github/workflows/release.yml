@@ -23,12 +23,27 @@ jobs:
   build-macos:
     uses: ./.github/workflows/build-macos.yml
     secrets: inherit
-  
+
+  build-windows-x64:
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      target: 'x86_64-pc-windows-msvc'
+      sign-artifacts: true
+      upload-artifacts: true
+    secrets: inherit
+
+  build-windows-x86:
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      target: 'i686-pc-windows-msvc'
+      sign-artifacts: true
+      upload-artifacts: true
+    secrets: inherit
 
   # Create release after all builds complete
   create-release:
     name: Create Release
-    needs: [build-linux, build-macos]
+    needs: [build-linux, build-macos, build-windows-x64, build-windows-x86]
     runs-on: ubuntu-latest
     
     steps:
@@ -65,7 +80,23 @@ jobs:
             cp artifacts/macos-universal/opcode.dmg release-assets/opcode_${{ steps.version.outputs.version }}_macos_universal.dmg || true
             cp artifacts/macos-universal/opcode.app.zip release-assets/opcode_${{ steps.version.outputs.version }}_macos_universal.app.tar.gz || true
           fi
-          
+
+          # Windows x64 artifacts
+          if [ -d "artifacts/windows-msi-x86_64-pc-windows-msvc" ]; then
+            cp artifacts/windows-msi-x86_64-pc-windows-msvc/*.msi release-assets/opcode_${{ steps.version.outputs.version }}_windows_x64.msi || true
+          fi
+          if [ -d "artifacts/windows-nsis-x86_64-pc-windows-msvc" ]; then
+            cp artifacts/windows-nsis-x86_64-pc-windows-msvc/*.exe release-assets/opcode_${{ steps.version.outputs.version }}_windows_x64_installer.exe || true
+          fi
+
+          # Windows x86 artifacts
+          if [ -d "artifacts/windows-msi-i686-pc-windows-msvc" ]; then
+            cp artifacts/windows-msi-i686-pc-windows-msvc/*.msi release-assets/opcode_${{ steps.version.outputs.version }}_windows_x86.msi || true
+          fi
+          if [ -d "artifacts/windows-nsis-i686-pc-windows-msvc" ]; then
+            cp artifacts/windows-nsis-i686-pc-windows-msvc/*.exe release-assets/opcode_${{ steps.version.outputs.version }}_windows_x86_installer.exe || true
+          fi
+
           # Create source code archives
           # Clean version without 'v' prefix for archive names
           CLEAN_VERSION="${{ steps.version.outputs.version }}"
@@ -110,11 +141,33 @@ jobs:
 
             ### Downloads
 
-            - macOS: `.dmg`, `.app.tar.gz` (Universal: Apple Silicon + Intel)
-            - Linux: `.AppImage`, `.deb`
+            - **Windows**:
+              - x64 (64-bit): `.msi`, `.exe` installer - recommended for most users
+              - x86 (32-bit): `.msi`, `.exe` installer - for older systems
+            - **macOS**: `.dmg`, `.app.tar.gz` (Universal: Apple Silicon + Intel)
+            - **Linux**: `.AppImage`, `.deb`
 
             ### Installation
 
-            - macOS: Open the `.dmg` and drag opcode to Applications.
-            - Linux: `chmod +x` the `.AppImage` and run it, or install the `.deb` on Debian/Ubuntu.
+            - **Windows**:
+              - Download the appropriate version for your system (x64 for most modern computers)
+              - Run the `.msi` installer for a standard Windows installation
+              - Or use the `.exe` installer for more installation options
+              - Both installers create desktop shortcuts and Start menu entries
+            - **macOS**: Open the `.dmg` and drag opcode to Applications
+            - **Linux**: `chmod +x` the `.AppImage` and run it, or install the `.deb` on Debian/Ubuntu
+
+            ### Windows Features
+
+            - Native Windows process management and system integration
+            - File association support for `.opc` files
+            - Custom URL protocol (`opcode://`) handling
+            - UAC-aware installation and privilege management
+            - Windows-specific optimizations and performance enhancements
+
+            ### System Requirements
+
+            - **Windows**: Windows 10 (1809+) or Windows 11, 4GB RAM recommended
+            - **macOS**: macOS 11+ (Big Sur), Apple Silicon or Intel
+            - **Linux**: Modern Linux distribution with glibc 2.28+
             

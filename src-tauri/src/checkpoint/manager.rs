@@ -424,7 +424,17 @@ impl CheckpointManager {
                         use std::os::unix::fs::PermissionsExt;
                         Some(metadata.permissions().mode())
                     }
-                    #[cfg(not(unix))]
+                    #[cfg(target_os = "windows")]
+                    {
+                        // On Windows, store readonly attribute as a simple permission flag
+                        // 0x444 (readonly) or 0x666 (read-write) to maintain compatibility
+                        if metadata.permissions().readonly() {
+                            Some(0o444) // Read-only
+                        } else {
+                            Some(0o666) // Read-write
+                        }
+                    }
+                    #[cfg(not(any(unix, target_os = "windows")))]
                     {
                         None
                     }
@@ -621,6 +631,16 @@ impl CheckpointManager {
             if let Some(mode) = snapshot.permissions {
                 use std::os::unix::fs::PermissionsExt;
                 let permissions = std::fs::Permissions::from_mode(mode);
+                fs::set_permissions(&full_path, permissions)
+                    .context("Failed to set file permissions")?;
+            }
+
+            #[cfg(target_os = "windows")]
+            if let Some(mode) = snapshot.permissions {
+                // On Windows, we stored 0o444 for readonly, 0o666 for read-write
+                use std::fs::Permissions;
+                let mut permissions = fs::metadata(&full_path)?.permissions();
+                permissions.set_readonly(mode == 0o444);
                 fs::set_permissions(&full_path, permissions)
                     .context("Failed to set file permissions")?;
             }

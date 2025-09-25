@@ -40,9 +40,36 @@ https://github.com/user-attachments/assets/6bceea0f-60b6-4c3e-a745-b891de00b8d0
 
 Think of opcode as your command center for Claude Code - bridging the gap between the command-line tool and a visual experience that makes AI-assisted development more intuitive and productive.
 
+## 🪟 Windows Platform Support
+
+**Opcode provides 100% native Windows support** with comprehensive Windows-specific features:
+
+### Windows Native Features
+- **🔄 Process Management**: Kill process trees, list processes by name, elevation checking
+- **📋 Registry Integration**: File associations (.opc files), URL protocols (opcode://), auto-start configuration
+- **🛡️ UAC & Permissions**: Administrator privilege detection, elevation requests, ACL management
+- **📦 Windows Installers**: MSI and NSIS installers with proper code signing support
+- **🔧 System Integration**: Native Windows API integration for optimal performance
+
+### Windows Installation Options
+- **MSI Installer**: Standard Windows installer with proper uninstall support
+- **NSIS Installer**: Lightweight installer with custom options
+- **Portable Version**: Run directly without installation
+- **Microsoft Store**: Available through Windows Package Manager (winget)
+
+### Windows System Requirements
+- **OS**: Windows 10 (1809+) or Windows 11
+- **Runtime**: .NET Framework 4.8+ (usually pre-installed)
+- **WebView**: Microsoft Edge WebView2 (auto-installed on Windows 11)
+- **Memory**: 4GB RAM minimum, 8GB recommended
+- **Storage**: 200MB for application, 1GB for development
+
+For complete Windows implementation details, see [Windows Implementation Guide](docs/WINDOWS_IMPLEMENTATION.md).
+
 ## 📋 Table of Contents
 
 - [🌟 Overview](#-overview)
+- [🪟 Windows Platform Support](#-windows-platform-support)
 - [✨ Features](#-features)
   - [🗂️ Project & Session Management](#️-project--session-management)
   - [🤖 CC Agents](#-cc-agents)
@@ -235,6 +262,7 @@ brew install pkg-config
 **Windows**
 - Install [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 - Install [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) (usually pre-installed on Windows 11)
+- PowerShell 5.1 or later (for Windows-specific features)
 
 ### Build Steps
 
@@ -279,6 +307,16 @@ brew install pkg-config
    bun run tauri build --target universal-apple-darwin
    ```
 
+   **Windows Installers (MSI and NSIS)**
+   ```bash
+   # Build both MSI and NSIS installers
+   bun run tauri build --target x86_64-pc-windows-msvc
+
+   # The following will be created:
+   # - src-tauri/target/release/bundle/msi/Opcode_x.x.x_x64_en-US.msi
+   # - src-tauri/target/release/bundle/nsis/Opcode_x.x.x_x64-setup.exe
+   ```
+
 ### Troubleshooting
 
 #### Common Issues
@@ -302,6 +340,16 @@ brew install pkg-config
 5. **Build fails with "out of memory"**
    - Try building with fewer parallel jobs: `cargo build -j 2`
    - Close other applications to free up RAM
+
+6. **Windows: "LINK : fatal error LNK1181: cannot open input file"**
+   - Install Visual Studio Build Tools with C++ workload
+   - Restart terminal after installation
+   - Run `rustup default stable-x86_64-pc-windows-msvc`
+
+7. **Windows: MSI installer creation fails**
+   - Install Windows 10/11 SDK from Visual Studio Installer
+   - Ensure WiX Toolset is available (installed automatically by Tauri)
+   - Run build as Administrator if code signing is configured
 
 #### Verify Your Build
 
@@ -374,6 +422,34 @@ cd src-tauri && cargo test
 
 # Format code
 cd src-tauri && cargo fmt
+```
+
+### Windows Development Setup
+
+For Windows developers, use the automated setup script:
+
+```powershell
+# Run the Windows setup script (PowerShell as Administrator)
+.\scripts\windows-setup.ps1
+
+# This script will:
+# - Verify all prerequisites (Node.js, Rust, Tauri CLI)
+# - Configure Windows build targets (MSI, NSIS)
+# - Create Windows icons and assets
+# - Set up GitHub Actions workflow
+# - Test the Windows build process
+```
+
+**Windows-specific testing**:
+```bash
+# Run Windows integration tests
+cd src-tauri && cargo test --test windows_integration
+
+# Run Windows test suite
+.\scripts\windows-test-suite.ps1
+
+# Build and test Windows installers
+bun run tauri build && .\src-tauri\target\release\bundle\msi\*.msi
 ```
 
 ## 🔒 Security
